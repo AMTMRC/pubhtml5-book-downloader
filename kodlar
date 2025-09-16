@@ -1,0 +1,100 @@
+# Gerekli modülleri yükle (eğer kurulu değilse)
+# Add-Type -AssemblyName System.Drawing
+
+# HAR dosyasını oku ve işleme al
+$har = Get-Content .\network.har -Raw | ConvertFrom-Json
+
+# Filtrelenmiş WEBP URL'lerini al ve sırala
+# URL'lerde sayfa bilgisi veya benzersiz bir tanımlayıcı bulmaya çalış
+$urlsToProcess = @()
+$har.log.entries | ForEach-Object {
+    $url = $_.request.url
+    if ($url -match "/files/(large|mobile)/" -and $url -match "\.(webp)$") {
+        # URL'den dosya adını al ve potansiyel sıralama bilgisini çıkar
+        $fileName = [System.IO.Path]::GetFileName($url)
+        $orderNumber = 0 # Varsayılan sıralama numarası
+
+        # URL'den veya dosya adından sıralama bilgisi çıkarmaya çalış
+        # Örnek: "page-1-image-001.webp" veya "/sayfa/1/resim_001.webp"
+        if ($fileName -match "(\d+)\.(webp)$") {
+            $orderNumber = [int]$matches[1]
+        } elseif ($url -match "/(\d+)/.*?\.(webp)$") { # URL'nin içinde sayı varsa
+             $orderNumber = [int]$matches[1]
+        } else {
+            # Eğer sıralama bilgisi yoksa, URL'nin bulunduğu sırayı kullan
+            # Bu, HAR dosyasındaki sıralamaya göre olur
+            $orderNumber = $urlsToProcess.Count + 1
+        }
+        
+        $urlsToProcess += [PSCustomObject]@{
+            Url = $url
+            FileName = $fileName
+            Order = $orderNumber
+        }
+    }
+}
+
+# URL'leri sıralama numarasına göre düzenle
+$sortedUrls = $urlsToProcess | Sort-Object Order
+
+# Dosyaları indirmek ve dönüştürmek için ana klasör
+$mainOutputFolder = ".\donusturulmus_goruntuler"
+if (-not (Test-Path $mainOutputFolder)) {
+    New-Item -ItemType Directory -Path $mainOutputFolder
+}
+
+# Her bir sıralanmış URL için indirme ve dönüştürme işlemleri
+$counter = 1
+$sortedUrls | ForEach-Object {
+    $url = $_.Url
+    $originalFileName = $_.FileName
+    $currentOrder = $_.Order # Mevcut sıralama numarası
+
+    # Dosya adını daha tutarlı hale getirmek için yeniden oluştur
+    # Örnek: "001.webp", "002.webp" gibi
+    $formattedFileName = "{0:D3}.webp" -f $counter
+    $webPFileName = $formattedFileName
+    $jpgFileName = $webPFileName -replace "\.webp$", ".jpg"
+    
+    $destinationWebPPath = Join-Path -Path $mainOutputFolder -ChildPath $webPFileName
+
+    Write-Host "İndiriliyor: $url -> $destinationWebPPath"
+    try {
+        Invoke-WebRequest -Uri $url -OutFile $destinationWebPPath -ErrorAction Stop
+        Write-Host "Başarıyla indirildi: $destinationWebPPath" -ForegroundColor Green
+
+        # WEBP dosyasını JPG'ye dönüştür
+        $destinationJpgPath = Join-Path -Path $mainOutputFolder -ChildPath $jpgFileName
+        
+        # WEBP'den JPG'ye dönüştürme işlemi için bir kütüphane kullanmanız gerekebilir.
+        # PowerShell'de doğrudan WEBP'den JPG'ye dönüştürme özelliği yerleşik olarak gelmeyebilir.
+        # Bu işlem için ImageMagick gibi harici bir araç veya .NET'in ImageSharp gibi bir kütüphanesini kullanabilirsiniz.
+        
+        # Aşağıdaki kısım, ImageMagick'in POWERSHELL'den nasıl çağrılabileceğine dair bir örnektir.
+        # ImageMagick'in sisteminizde kurulu olması GEREKİR.
+        # Komut satırından: magick input.webp output.jpg
+        
+        $imageMagickPath = "C:\Program Files\ImageMagick-7.1.2-Q16-HDRI\magick.exe" # Kendi ImageMagick kurulum yolunuzu girin
+        if (Test-Path $imageMagickPath) {
+            $arguments = @(
+                $destinationWebPPath,
+                $destinationJpgPath
+            )
+            & $imageMagickPath @arguments
+            Write-Host "Dönüştürüldü: $destinationJpgPath" -ForegroundColor Cyan
+            
+            # İsteğe bağlı: Orijinal WEBP dosyasını sil
+            # Remove-Item $destinationWebPPath
+        } else {
+            Write-Host "Uyarı: ImageMagick bulunamadı. Dönüştürme işlemi atlandı. Lütfen ImageMagick'i kurun ve yolunu kodda güncelleyin." -ForegroundColor Yellow
+        }
+
+        $counter++ # Sıra numarası için sayacı artır
+
+    }
+    catch {
+        Write-Host "Hata oluştu: $url - $_" -ForegroundColor Red
+    }
+}
+
+Write-Host "İndirme ve dönüştürme işlemi tamamlandı."
